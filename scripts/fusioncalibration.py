@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
+from scipy.signal import correlate
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import warnings
@@ -33,9 +34,9 @@ def get_user_inputs():
     file_raspi = input("Enter RPi data filename: ").strip()
     
     return {
-        'outdir': outdir,
+        'outdir': f"results/figures/{outdir}",
         'outfile': outfile,
-        'relpath': relpath,
+        'relpath': f"data/{relpath}",
         'file_gs1': file_gs1,
         'file_ws1': file_ws1,
         'file_raspi': file_raspi
@@ -267,6 +268,12 @@ def merge_sensor_data(gs1_agg, ws1_agg, rpi_agg):
         print(f"Removed {len(fused) - len(fused_clean)} rows with null values")
     
     return fused_clean
+
+def find_optimal_lag(x, y, max_lag=60):  # max_lag in minutes
+    correlation = correlate(y, x, mode='full')
+    lags = np.arange(-len(x) + 1, len(x))
+    lag_minutes = lags[np.argmax(correlation)]
+    return lag_minutes
 
 def perform_calibration(fused_data):
     """Perform linear regression calibration with comprehensive statistics"""

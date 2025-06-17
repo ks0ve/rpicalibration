@@ -1,0 +1,18 @@
+Environmental Sensor Calibration Results
+=============================================
+
+Temperature Calibration:
+  Equation: y = 0.033332 * x + 22.303345
+  R-squared: 0.0015
+  RMSE: 0.5586
+  MAE: 0.5151
+
+Humidity Calibration:
+  Equation: y = 0.437232 * x + 34.513661
+  R-squared: 0.2240
+  RMSE: 2.4247
+  MAE: 1.8990
+
+Usage Instructions:
+To calibrate new RPi readings, apply the equations above:
+calibrated_value = slope * raw_rpi_value + intercept
