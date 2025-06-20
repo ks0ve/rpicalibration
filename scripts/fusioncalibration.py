@@ -1,7 +1,10 @@
 import os
 import pandas as pd
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
+matplotlib.use('Agg')
+plt.ioff()
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.signal import correlate
@@ -34,7 +37,7 @@ def get_user_inputs():
     file_raspi = input("Enter RPi data filename: ").strip()
     
     return {
-        'outdir': f"results/figures/{outdir}",
+        'outdir': f"figures/{outdir}",
         'outfile': outfile,
         'relpath': f"data/{relpath}",
         'file_gs1': file_gs1,
@@ -170,6 +173,10 @@ def clean_sensor_data(gs1, ws1, rpi):
             df = df[light_mask]
     
     print(f"✅ Cleaned data - GS1: {len(gs1_clean)}, WS1: {len(ws1_clean)}, RPi: {len(rpi_clean)} rows")
+    
+    gs1_clean.to_csv
+    ws1_clean.to_csv
+    rpi_clean.to_csv('data/{}')
     return gs1_clean, ws1_clean, rpi_clean
 
 def normalize_timestamps(gs1_clean, ws1_clean, rpi_clean):
@@ -286,15 +293,19 @@ def perform_calibration(fused_data):
         temp_model = LinearRegression()
         X_temp = fused_data[['Temperature_RPI']]
         y_temp = fused_data['Temperature_GS1']
+        #lagged ver
+        temp_lag = find_optimal_lag(fused_data['Temperature_RPI'], fused_data['Temperature_GS1'])
+        fused_data['Temperature_GS1_shifted'] = fused_data['Temperature_GS1'].shift(temp_lag)
+        temp_model.fit(X_temp, fused_data['Temperature_GS1_shifted'])  # Use shifted data
         
-        temp_model.fit(X_temp, y_temp)
+        #temp_model.fit(X_temp, y_temp)
         temp_pred = temp_model.predict(X_temp)
         fused_data['Temperature_RPI_Calibrated'] = temp_pred
         
         # Calculate statistics
-        temp_r2 = r2_score(y_temp, temp_pred)
-        temp_rmse = np.sqrt(mean_squared_error(y_temp, temp_pred))
-        temp_mae = mean_absolute_error(y_temp, temp_pred)
+        temp_r2 = r2_score(fused_data['Temperature_GS1_shifted'], temp_pred)
+        temp_rmse = np.sqrt(mean_squared_error(fused_data['Temperature_GS1_shifted'], temp_pred))
+        temp_mae = mean_absolute_error(fused_data['Temperature_GS1_shifted'], temp_pred)
         
         calibration_results['temperature'] = {
             'model': temp_model,
@@ -314,15 +325,19 @@ def perform_calibration(fused_data):
         hum_model = LinearRegression()
         X_hum = fused_data[['Humidity_RPI']]
         y_hum = fused_data['Humidity_GS1']
+        #lagged ver
+        hum_lag = find_optimal_lag(fused_data['Humidity_RPI'], fused_data['Humidity_GS1'])
+        fused_data['Humidity_GS1_shifted'] = fused_data['Humidity_GS1'].shift(hum_lag)
+        hum_model.fit(X_hum, fused_data['Humidity_GS1_shifted'])  # Use shifted data
         
-        hum_model.fit(X_hum, y_hum)
+        #hum_model.fit(X_hum, y_hum)
         hum_pred = hum_model.predict(X_hum)
         fused_data['Humidity_RPI_Calibrated'] = hum_pred
         
         # Calculate statistics
-        hum_r2 = r2_score(y_hum, hum_pred)
-        hum_rmse = np.sqrt(mean_squared_error(y_hum, hum_pred))
-        hum_mae = mean_absolute_error(y_hum, hum_pred)
+        hum_r2 = r2_score(fused_data['Humidity_GS1_shifted'], hum_pred)
+        hum_rmse = np.sqrt(mean_squared_error(fused_data['Humidity_GS1_shifted'], hum_pred))
+        hum_mae = mean_absolute_error(fused_data['Humidity_GS1_shifted'], hum_pred)
         
         calibration_results['humidity'] = {
             'model': hum_model,
@@ -336,6 +351,9 @@ def perform_calibration(fused_data):
         print(f"Humidity calibration:")
         print(f"  Equation: y = {hum_model.coef_[0]:.3f}x + {hum_model.intercept_:.3f}")
         print(f"  R² = {hum_r2:.3f}, RMSE = {hum_rmse:.3f}%, MAE = {hum_mae:.3f}%")
+
+        light_lag = find_optimal_lag(fused_data['Ambient_Light_RPI'], fused_data['Ambient_Light_WS1'])
+        fused_data['Ambient_Light_WS1_shifted'] = fused_data['Ambient_Light_WS1'].shift(light_lag)
     
     return fused_data, calibration_results
 
@@ -345,14 +363,14 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
     
     # Define available features based on data
     features = {}
-    if all(col in fused_data.columns for col in ['Temperature_RPI', 'Temperature_GS1']):
-        temp_cols = ['Temperature_RPI', 'Temperature_GS1']
+    if all(col in fused_data.columns for col in ['Temperature_RPI', 'Temperature_GS1_shifted']):
+        temp_cols = ['Temperature_RPI', 'Temperature_GS1_shifted']
         if 'Temperature_RPI_Calibrated' in fused_data.columns:
             temp_cols.append('Temperature_RPI_Calibrated')
         features['Temperature'] = temp_cols
     
-    if all(col in fused_data.columns for col in ['Humidity_RPI', 'Humidity_GS1']):
-        hum_cols = ['Humidity_RPI', 'Humidity_GS1']
+    if all(col in fused_data.columns for col in ['Humidity_RPI', 'Humidity_GS1_shifted']):
+        hum_cols = ['Humidity_RPI', 'Humidity_GS1_shifted']
         if 'Humidity_RPI_Calibrated' in fused_data.columns:
             hum_cols.append('Humidity_RPI_Calibrated')
         features['Humidity'] = hum_cols
@@ -529,7 +547,7 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
             fig, ax = plt.subplots(figsize=(10, 8))
             im = ax.imshow(corr_matrix.values, cmap='coolwarm', aspect='auto', 
                           vmin=-1, vmax=1)
-            
+
             # Add text annotations
             for i in range(len(corr_matrix)):
                 for j in range(len(corr_matrix.columns)):
@@ -548,6 +566,45 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
             pdf.savefig(fig)
             plt.close()
 
+                    # 6. Aggregated time-window visualizations
+        agg_periods = {
+            '10 Minutes': '10min',
+            '1 Hour':     '1H',
+            '12 Hours':   '12H',
+            '24 Hours':   '24H'
+        }
+        for period_name, rule in agg_periods.items():
+            # resample & mean-aggregate
+            agg_df = fused_data.resample(rule).mean()
+
+            # one subplot row per feature
+            fig, axes = plt.subplots(
+                nrows=len(features), ncols=1,
+                figsize=(12, 4 * len(features)),
+                sharex=True
+            )
+            if len(features) == 1:
+                axes = [axes]
+
+            for ax, (feat, cols) in zip(axes, features.items()):
+                for col in cols:
+                    if col in agg_df.columns:
+                        ax.plot(
+                            agg_df.index,
+                            agg_df[col],
+                            label=col.replace('_', ' '),
+                            linewidth=1
+                        )
+                ax.set_title(f"{feat} (aggregated over {period_name})")
+                ax.set_ylabel(feat.replace('_', ' '))
+                ax.legend()
+                ax.grid(alpha=0.3)
+
+            axes[-1].set_xlabel("Time")
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
 def main():
     """Main execution function"""
     print("🌡️ Environmental Sensor Calibration Tool")
@@ -558,7 +615,7 @@ def main():
         config = get_user_inputs()
         
         # Create output directory
-        output_dir = f"figures/{config['outdir']}"
+        output_dir = f"results/{config['outdir']}"
         os.makedirs(output_dir, exist_ok=True)
         pdf_path = os.path.join(output_dir, config['outfile'])
         print(f"Output will be saved to: {pdf_path}")

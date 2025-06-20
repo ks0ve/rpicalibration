@@ -8,8 +8,8 @@ import seaborn as sns
 # Read data in with timestamp as index
 #
 
-ws1 = pd.read_csv('jun4jun5dat/jun4jun5ws1.csv', parse_dates=['created_at'], date_parser = lambda x: pd.to_datetime(x))
-gs1 = pd.read_csv('jun4jun5dat/jun4jun5gs1.csv', parse_dates=['created_at'], date_parser = lambda x: pd.to_datetime(x))
+ws1 = pd.read_csv('data/645/gs1est.csv', parse_dates=['created_at'], date_parser = lambda x: pd.to_datetime(x))
+gs1 = pd.read_csv('data/645/ws1est.csv', parse_dates=['created_at'], date_parser = lambda x: pd.to_datetime(x))
 
 #
 # Keep relevant cols
