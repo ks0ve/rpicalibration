@@ -1,5 +1,9 @@
 *.csv
 *.env
 *.log
+/data/
+/results/
+**/old/
+venv/
 __pycache__/
 *.ipynb_checkpoints
