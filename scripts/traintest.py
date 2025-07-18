@@ -18,11 +18,11 @@ from sklearn.model_selection import train_test_split
 # Modify variables in get_user_inputs() as needed
 def get_user_inputs():
     """Change paths and filenames as needed"""
-    output_directory = input_directory = 'modelTraining' # Change to your desired output/input directory. Input directory is where the data files are located.
-    output_filename = 'results.pdf' # Change to your desired output filename
-    gs1_file = 'gs1_3dayT.csv' # Change to your GS1 data file
-    ws1_file = 'ws1_3dayT.csv' # Change to your WS1 data file
-    rpi_file = 'rpi_11day.csv' # Change to your RPi data file
+    output_directory = input_directory = 'outside' # Change to your desired output/input directory. Input directory is where the data files are located.
+    output_filename = 'train.pdf' # Change to your desired output filename
+    gs1_file = 'gs1_out.csv' # Change to your GS1 data file
+    ws1_file = 'ws1_out.csv' # Change to your WS1 data file
+    rpi_file = 'rpi_out.csv' # Change to your RPi data file
     return {
         'outdir': f"results/{output_directory}",
         'outfile': output_filename,
@@ -259,55 +259,57 @@ def merge_sensor_data(gs1_agg, ws1_agg, rpi_agg):
     return fused_clean
 
 def perform_calibration(fused_data):
-    """Calibrate with LinearRegression, RandomForest and XGBoost"""
-    print("\n=== Performing Calibration ===")
+    """Train calibration models with a train/test split and return performance metrics"""
+    # Define models to evaluate
+    models = {
+        'linear_regression': LinearRegression(),
+        'random_forest': RandomForestRegressor(n_estimators=100, random_state=42),
+        'xgboost': XGBRegressor(n_estimators=100, random_state=42, objective='reg:squarederror')
+    }
     calibration_results = {}
 
-    for feat in ['Temperature', 'Humidity']:
-        raw_col = f"{feat}_RPI"
-        ref_col = f"{feat}_GS1"
-        if raw_col not in fused_data.columns or ref_col not in fused_data.columns:
-            print(f"Warning: Missing columns for {feat} calibration. ")
+    # Identify features based on RPI columns
+    features = set(col.replace('_RPI','').lower() for col in fused_data.columns if col.endswith('_RPI'))
+
+    for feat in features:
+        col_rpi = f"{feat.title()}_RPI"
+        # Determine reference column
+        ref_cols = [f"{feat.title()}_GS1", f"{feat.title()}_WS1"]
+        col_ref = next((c for c in ref_cols if c in fused_data.columns), None)
+        if col_ref is None:
             continue
 
-        X = fused_data[[raw_col]]
-        y = fused_data[ref_col]
+        # Prepare data and split
+        df = fused_data[[col_rpi, col_ref]].dropna()
+        X = df[[col_rpi]].values
+        y = df[col_ref].values
+        X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+            X, y, df.index, test_size=0.2, random_state=42
+        )
 
-        # define your three models
-        methods = {
-            'linear':        LinearRegression(),
-            'random_forest': RandomForestRegressor(random_state=42),
-            'xgboost':       XGBRegressor(objective='reg:squarederror',
-                                          random_state=42, eval_metric='rmse')
-        }
+        calibration_results[feat] = {}
+        for method, model in models.items():
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
 
-        calibration_results[feat.lower()] = {}
-        for name, model in methods.items():
-            model.fit(X, y)
-            pred = model.predict(X)
+            # Store predictions back into the DataFrame for visualization
+            pred_col = f"{feat.title()}_RPI_{method}"
+            fused_data.loc[idx_test, pred_col] = y_pred
 
-            # add prediction column
-            col_pred = f"{feat}_RPI_{name}"
-            fused_data[col_pred] = pred
-
-            # compute metrics
-            r2   = r2_score(y, pred)
-            mse  = mean_squared_error(y, pred)
+            # Calculate metrics on test set
+            mse = mean_squared_error(y_test, y_pred)
             rmse = np.sqrt(mse)
-            mae  = mean_absolute_error(y, pred)
-            ev   = explained_variance_score(y, pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+            ev = explained_variance_score(y_test, y_pred)
 
-            calibration_results[feat.lower()][name] = {
-                'model': model,
-                'r2': r2,
+            calibration_results[feat][method] = {
                 'mse': mse,
                 'rmse': rmse,
                 'mae': mae,
+                'r2': r2,
                 'explained_variance': ev
             }
-
-            print(f"{feat} – {name.title()}: R²={r2:.3f}, MSE={mse:.3f}, "
-                  f"RMSE={rmse:.3f}, MAE={mae:.3f}, EV={ev:.3f}")
 
     return fused_data, calibration_results
 
@@ -333,139 +335,6 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
         features['Ambient_Light'] = ['Ambient_Light_RPI', 'Ambient_Light_WS1']
     
     with PdfPages(pdf_path) as pdf:
-        # 1. Summary statistics table
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.axis('tight')
-        ax.axis('off')
-        
-        summary_data = []
-        for feat, cols in features.items():
-            for col in cols:
-                data = fused_data[col].dropna()
-                summary_data.append([
-                    col, len(data), f"{data.mean():.2f}", f"{data.std():.2f}",
-                    f"{data.min():.2f}", f"{data.max():.2f}"
-                ])
-        
-        table = ax.table(cellText=summary_data,
-                        colLabels=['Sensor', 'Count', 'Mean', 'Std', 'Min', 'Max'],
-                        cellLoc='center', loc='center')
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1.2, 1.5)
-        plt.title('Summary Statistics', fontsize=16, pad=20)
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close()
-        
-        # 2. Improved histograms with overlays
-        for feat, cols in features.items():
-            fig, axes = plt.subplots(1, len(cols), figsize=(5*len(cols), 4))
-            if len(cols) == 1:
-                axes = [axes]
-            
-            for i, col in enumerate(cols):
-                data = fused_data[col].dropna()
-                axes[i].hist(data, bins=30, alpha=0.7, edgecolor='black')
-                axes[i].axvline(data.mean(), color='red', linestyle='--', 
-                               label=f'Mean: {data.mean():.2f}')
-                axes[i].set_title(f"{col}")
-                axes[i].set_xlabel(col.replace('_', ' '))
-                axes[i].set_ylabel("Frequency")
-                axes[i].legend()
-                axes[i].grid(True, alpha=0.3)
-            
-            plt.suptitle(f"Distribution Comparison: {feat}")
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close()
-        
-        # 3. Enhanced scatter plots
-        for feat, cols in features.items():
-            if feat == 'Ambient_Light' and len(cols) >= 2:
-                fig, ax = plt.subplots(figsize=(8, 6))
-                x_data = fused_data[cols[0]].dropna()
-                y_data = fused_data[cols[1]].dropna()
-                
-                # Align data for correlation
-                common_idx = x_data.index.intersection(y_data.index)
-                x_aligned = x_data.loc[common_idx]
-                y_aligned = y_data.loc[common_idx]
-                
-                ax.scatter(x_aligned, y_aligned, alpha=0.6)
-                
-                # Add correlation coefficient
-                if len(x_aligned) > 1:
-                    corr = np.corrcoef(x_aligned, y_aligned)[0, 1]
-                    ax.text(0.05, 0.95, f'r = {corr:.3f}', transform=ax.transAxes,
-                           bbox=dict(boxstyle="round", facecolor='wheat'))
-                
-                ax.set_xlabel(f"{cols[0].replace('_', ' ')}")
-                ax.set_ylabel(f"{cols[1].replace('_', ' ')}")
-                ax.set_title(f"Light Sensor Comparison")
-                ax.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close()
-                
-            elif feat in ['Temperature', 'Humidity'] and len(cols) >= 2:
-                fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-                
-                # Raw comparison
-                rpi_col = f"{feat}_RPI"
-                ref_col = f"{feat}_GS1"
-                
-                x_data = fused_data[rpi_col]
-                y_data = fused_data[ref_col]
-                
-                axes[0].scatter(x_data, y_data, alpha=0.6, label='Data points')
-                
-                # Add 1:1 line
-                min_val = min(x_data.min(), y_data.min())
-                max_val = max(x_data.max(), y_data.max())
-                axes[0].plot([min_val, max_val], [min_val, max_val], 'k--', 
-                            alpha=0.5, label='1:1 line')
-                
-                axes[0].set_xlabel(f"{feat} RPi")
-                axes[0].set_ylabel(f"{feat} Reference (GS1)")
-                axes[0].set_title(f"Raw {feat} Comparison")
-                axes[0].legend()
-                axes[0].grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close()
-
-        # 4. Enhanced correlation matrix
-        if len(features) > 0:
-            all_cols = []
-            for cols in features.values():
-                all_cols.extend(cols)
-            
-            corr_data = fused_data[all_cols]
-            corr_matrix = corr_data.corr()
-            
-            fig, ax = plt.subplots(figsize=(10, 8))
-            im = ax.imshow(corr_matrix.values, cmap='coolwarm', aspect='auto', 
-                          vmin=-1, vmax=1)
-
-            # Add text annotations
-            for i in range(len(corr_matrix)):
-                for j in range(len(corr_matrix.columns)):
-                    text = ax.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}',
-                                 ha="center", va="center", color="black", fontsize=8)
-            
-            ax.set_xticks(range(len(corr_matrix.columns)))
-            ax.set_yticks(range(len(corr_matrix)))
-            ax.set_xticklabels([col.replace('_', '\n') for col in corr_matrix.columns], 
-                              rotation=45, ha='right')
-            ax.set_yticklabels([col.replace('_', '\n') for col in corr_matrix.index])
-            
-            plt.colorbar(im, ax=ax, label='Pearson Correlation Coefficient')
-            plt.title("Sensor Correlation Matrix")
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close()
         
          # 5. Time series subplots: one panel per model
         if len(fused_data) > 1:
@@ -492,13 +361,13 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
                             label='Raw RPI', linewidth=1, alpha=0.7)
                     ax.plot(fused_data.index, fused_data[ref_col],
                             label='Reference GS1', linewidth=1, alpha=0.7)
-                    '''# plot this model’s prediction
+                    # plot this model’s prediction
                     ax.plot(fused_data.index, fused_data[pred_col],
                             label=method.replace('_', ' ').title(),
-                            linewidth=1.5)'''
+                            linewidth=1.5)
 
                     ax.set_ylabel(feat)
-                    ax.set_title(f"{feat}: Raw vs Reference")
+                    ax.set_title(f"{feat}: Raw vs Reference vs {method.title()}")
                     ax.legend(loc='upper left')
                     ax.grid(True, alpha=0.3)
 
@@ -509,6 +378,43 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
                 pdf.savefig(fig)
                 plt.close()
         
+        # —————————————————————————————————————————————
+        #  X. Test-set only time series: Reference vs Predicted
+        # —————————————————————————————————————————————
+        for feat, methods in calibration_results.items():
+            # pick the right reference column (GS1 or WS1)
+            ref_col = next((c for c in fused_data.columns 
+                            if c.startswith(feat.title()) and ('_GS1' in c or '_WS1' in c)),
+                           None)
+            if ref_col is None:
+                continue
+
+            for method in methods:
+                pred_col = f"{feat.title()}_RPI_{method}"
+                if pred_col not in fused_data.columns:
+                    continue
+
+                # only test‐split rows have a non-null pred_col
+                test_df = fused_data[fused_data[pred_col].notnull()]
+                if test_df.empty:
+                    continue
+
+                fig, ax = plt.subplots(figsize=(15, 5))
+                ax.plot(test_df.index, test_df[ref_col],
+                        label='Reference', linewidth=2, alpha=0.8)
+                ax.plot(test_df.index, test_df[pred_col],
+                        label=method.replace('_', ' ').title(),
+                        linewidth=1.5, alpha=0.8)
+
+                ax.set_title(f"{feat.title()} – Test Set: Reference vs {method.replace('_',' ').title()}")
+                ax.set_xlabel("Time")
+                ax.set_ylabel(feat.title())
+                ax.legend(loc='upper left')
+                ax.grid(True, alpha=0.3)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close()
         # 6. Calibration metrics summary table
         fig, ax = plt.subplots(figsize=(12, 0.5 + 0.5 * sum(len(m) for m in calibration_results.values())))
         ax.axis('tight'); ax.axis('off')
@@ -544,44 +450,68 @@ def create_visualizations(fused_data, calibration_results, pdf_path):
                     ax.grid(True, alpha=0.3)
                     pdf.savefig(fig); plt.close()
         
-        # 8. Aggregated time-window visualizations
-        agg_periods = {
-            '10 Minutes': '10min',
-            '1 Hour':     '1h',
-            '12 Hours':   '12h',
-            '24 Hours':   '24h'
-        }
-        for period_name, rule in agg_periods.items():
-            # resample & mean-aggregate
-            agg_df = fused_data.resample(rule).mean()
-
-            # one subplot row per feature
-            fig, axes = plt.subplots(
-                nrows=len(features), ncols=1,
-                figsize=(12, 4 * len(features)),
-                sharex=True
-            )
-            if len(features) == 1:
-                axes = [axes]
-
-            for ax, (feat, cols) in zip(axes, features.items()):
-                for col in cols:
-                    if col in agg_df.columns:
-                        ax.plot(
-                            agg_df.index,
-                            agg_df[col],
-                            label=col.replace('_', ' '),
-                            linewidth=1
-                        )
-                ax.set_title(f"{feat} (aggregated over {period_name})")
-                ax.set_ylabel(feat.replace('_', ' '))
-                ax.legend()
-                ax.grid(alpha=0.3)
-
-            axes[-1].set_xlabel("Time")
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+        # inside your PdfPages context, after residual plots
+        for feat, methods in calibration_results.items():
+            ref_col = next((c for c in fused_data.columns if c.startswith(feat.title()) and ('_GS1' in c or '_WS1' in c)), None)
+            for method in methods:
+                pred_col = f"{feat.title()}_RPI_{method}"
+                if ref_col and pred_col in fused_data.columns:
+                    fig, ax = plt.subplots(figsize=(8,6))
+                    ax.scatter(fused_data[pred_col], fused_data[ref_col], alpha=0.6)
+                    # 45° line
+                    minv = min(fused_data[pred_col].min(), fused_data[ref_col].min())
+                    maxv = max(fused_data[pred_col].max(), fused_data[ref_col].max())
+                    ax.plot([minv, maxv], [minv, maxv], linestyle='--')
+                    ax.set_title(f'Predicted vs Actual: {feat.title()} - {method.replace("_"," ").title()}')
+                    ax.set_xlabel('Predicted')
+                    ax.set_ylabel('Actual')
+                    pdf.savefig(fig); plt.close()
+        
+        for feat, methods in calibration_results.items():
+            ref_col = next((c for c in fused_data.columns if c.startswith(feat.title()) and ('_GS1' in c or '_WS1' in c)), None)
+            for method in methods:
+                pred_col = f"{feat.title()}_RPI_{method}"
+                if ref_col and pred_col in fused_data.columns:
+                    residuals = fused_data[pred_col] - fused_data[ref_col]
+                    fig, ax = plt.subplots(figsize=(8,5))
+                    ax.hist(residuals.dropna(), bins=30, alpha=0.7)
+                    ax.axvline(0, linestyle='--')
+                    ax.set_title(f'Residuals Histogram: {feat.title()} - {method.replace("_"," ").title()}')
+                    ax.set_xlabel('Residual')
+                    ax.set_ylabel('Frequency')
+                    pdf.savefig(fig); plt.close()
+        
+        # plot a sample day or the entire test window
+        times = fused_data.index
+        for feat, methods in calibration_results.items():
+            ref_col = next((c for c in fused_data.columns if c.startswith(feat.title()) and ('_GS1' in c or '_WS1' in c)), None)
+            for method in methods:
+                pred_col = f"{feat.title()}_RPI_{method}"
+                if ref_col and pred_col in fused_data.columns:
+                    fig, ax = plt.subplots(figsize=(10,4))
+                    ax.plot(times, fused_data[ref_col], label='Reference')
+                    ax.plot(times, fused_data[pred_col], label=method.replace('_',' ').title(), alpha=0.8)
+                    ax.set_title(f'Time Series: {feat.title()} - {method.replace("_"," ").title()}')
+                    ax.set_xlabel('Timestamp')
+                    ax.set_ylabel(feat.title())
+                    ax.legend()
+                    pdf.savefig(fig); plt.close()
+        
+        fused_data['hour'] = fused_data.index.hour
+        for feat, methods in calibration_results.items():
+            ref_col = next((c for c in fused_data.columns if c.startswith(feat.title()) and ('_GS1' in c or '_WS1' in c)), None)
+            for method in methods:
+                pred_col = f"{feat.title()}_RPI_{method}"
+                if ref_col and pred_col in fused_data.columns:
+                    fig, ax = plt.subplots(figsize=(12,5))
+                    fused_data['residual'] = fused_data[pred_col] - fused_data[ref_col]
+                    fused_data.boxplot(column='residual', by='hour', ax=ax)
+                    ax.set_title(f'Hourly Residuals: {feat.title()} - {method.replace("_"," ").title()}')
+                    ax.set_xlabel('Hour of Day')
+                    ax.set_ylabel('Residual')
+                    plt.suptitle('')
+                    pdf.savefig(fig); plt.close()
+        
 
 def main():
     """Main execution function"""
@@ -642,7 +572,7 @@ def main():
         print(f"📊 Processed {len(fused_data)} synchronized data points")
         
         # Save calibration equations to file
-        cal_file = os.path.join(output_dir, "calibration_equations.txt")
+        cal_file = os.path.join(output_dir, "error_metrics.txt")
         with open(cal_file, 'w') as f:
             f.write("Environmental Sensor Calibration Results\n")
             f.write("=" * 45 + "\n\n")
